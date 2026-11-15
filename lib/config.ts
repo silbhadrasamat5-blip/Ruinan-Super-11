@@ -11,7 +11,7 @@ export const APP_CONFIG = {
    * ⚠️  Change this before sharing the link with your team!
    * The PIN is checked client-side; it is NOT stored in the database.
    */
-  adminPin: "1234",
+  adminPin: "9647",
 
   /** Local currency symbol shown next to amounts. */
   currency: "₹",
