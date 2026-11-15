@@ -9,11 +9,11 @@ import type { Match, Player, MatchPlayer } from "@/types";
 type Filter = "all" | "official" | "friendly";
 
 export default function StatsTab() {
-  const [matches,     setMatches]     = useState<Match[]>([]);
-  const [players,     setPlayers]     = useState<Player[]>([]);
-  const [matchPlayers,setMatchPlayers]= useState<MatchPlayer[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [filter,      setFilter]      = useState<Filter>("all");
+  const [matches,      setMatches]      = useState<Match[]>([]);
+  const [players,      setPlayers]      = useState<Player[]>([]);
+  const [matchPlayers, setMatchPlayers] = useState<MatchPlayer[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [filter,       setFilter]       = useState<Filter>("all");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -37,16 +37,16 @@ export default function StatsTab() {
 
   /* ── Official stats ── */
   const officialMatches = completed.filter((m) => m.type === "official");
-  const wins  = officialMatches.filter((m) => m.score_home > m.score_away).length;
-  const losses= officialMatches.filter((m) => m.score_home < m.score_away).length;
-  const draws = officialMatches.filter((m) => m.score_home === m.score_away).length;
-  const goalsFor     = officialMatches.reduce((s, m) => s + m.score_home, 0);
-  const goalsAgainst = officialMatches.reduce((s, m) => s + m.score_away, 0);
+  const wins   = officialMatches.filter((m) => m.score_home > m.score_away).length;
+  const losses = officialMatches.filter((m) => m.score_home < m.score_away).length;
+  const draws  = officialMatches.filter((m) => m.score_home === m.score_away).length;
+  const runsFor     = officialMatches.reduce((s, m) => s + m.score_home, 0);
+  const runsAgainst = officialMatches.reduce((s, m) => s + m.score_away, 0);
 
   /* ── Friendly stats ── */
   const friendlyMatches = completed.filter((m) => m.type === "friendly");
-  const teamAWins = friendlyMatches.filter((m) => m.team_a_score > m.team_b_score).length;
-  const teamBWins = friendlyMatches.filter((m) => m.team_b_score > m.team_a_score).length;
+  const teamAWins    = friendlyMatches.filter((m) => m.team_a_score > m.team_b_score).length;
+  const teamBWins    = friendlyMatches.filter((m) => m.team_b_score > m.team_a_score).length;
   const friendlyDraws = friendlyMatches.filter((m) => m.team_a_score === m.team_b_score).length;
 
   /* ── MVP leaderboard ── */
@@ -83,7 +83,7 @@ export default function StatsTab() {
             className={`flex-1 py-2 rounded-xl text-xs font-semibold capitalize transition-colors
               ${filter === f ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"}`}
           >
-            {f === "all" ? "All" : f === "official" ? "⚽ Official" : "🤝 Friendly"}
+            {f === "all" ? "All" : f === "official" ? "🏏 Official" : "🤝 Friendly"}
           </button>
         ))}
       </div>
@@ -99,7 +99,7 @@ export default function StatsTab() {
           {(filter === "all" || filter === "official") && officialMatches.length > 0 && (
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
               <div className="bg-blue-500 px-4 py-3">
-                <p className="text-white font-bold text-sm">⚽ Official Match Record</p>
+                <p className="text-white font-bold text-sm">🏏 Official Match Record</p>
                 <p className="text-blue-100 text-xs">{officialMatches.length} matches played</p>
               </div>
               <div className="p-4">
@@ -109,15 +109,15 @@ export default function StatsTab() {
                   <StatPill label="Draws"  value={draws}  color="gray"    />
                   <StatPill label="Losses" value={losses} color="red"     />
                 </div>
-                {/* Goals */}
+                {/* Runs */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-emerald-50 rounded-xl p-3 text-center">
-                    <p className="text-2xl font-black text-emerald-700">{goalsFor}</p>
-                    <p className="text-xs text-emerald-600 font-semibold">Goals Scored</p>
+                    <p className="text-2xl font-black text-emerald-700">{runsFor}</p>
+                    <p className="text-xs text-emerald-600 font-semibold">Runs Scored</p>
                   </div>
                   <div className="bg-red-50 rounded-xl p-3 text-center">
-                    <p className="text-2xl font-black text-red-600">{goalsAgainst}</p>
-                    <p className="text-xs text-red-500 font-semibold">Goals Conceded</p>
+                    <p className="text-2xl font-black text-red-600">{runsAgainst}</p>
+                    <p className="text-xs text-red-500 font-semibold">Runs Conceded</p>
                   </div>
                 </div>
                 {/* Win % bar */}
@@ -190,7 +190,7 @@ export default function StatsTab() {
                     </span>
                     {player.avatar_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={player.avatar_url} alt={player.name} className="w-10 h-10 rounded-full object-cover" />
+                      <img src={player.avatar_url} alt={player.name} className="w-10 h-10 rounded-full object-cover object-top" />
                     ) : (
                       <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center font-black text-gray-400">
                         {player.name[0]}
@@ -223,7 +223,7 @@ export default function StatsTab() {
                     <span className="text-sm font-black w-6 text-center text-gray-300">{i + 1}</span>
                     {player.avatar_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={player.avatar_url} alt={player.name} className="w-10 h-10 rounded-full object-cover" />
+                      <img src={player.avatar_url} alt={player.name} className="w-10 h-10 rounded-full object-cover object-top" />
                     ) : (
                       <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center font-black text-gray-400">
                         {player.name[0]}

@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import {
-  Plus, Shuffle, Trophy, Star, Share2, ChevronDown,
-  X, Loader2, Minus, Swords, Users,
+  Plus, Shuffle, Star, Share2,
+  X, Loader2, Swords, Users,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { APP_CONFIG } from "@/lib/config";
@@ -17,25 +17,57 @@ interface Props {
 
 type MatchView = "list" | "scoreboard";
 
+/* ─────────────────────────────────────────────
+   Cricket helpers
+───────────────────────────────────────────── */
+interface CricketData {
+  total_ovs?: number; // match overs limit e.g. 20 for T20
+  home_w?: number;    // home wickets fallen
+  home_o?: string;    // home overs faced e.g. "12.0"
+  away_w?: number;
+  away_o?: string;
+  a_w?: number;       // team a wickets (friendly)
+  a_o?: string;
+  b_w?: number;
+  b_o?: string;
+}
+
+function parseCricket(notes: string | null): CricketData {
+  try { return notes ? JSON.parse(notes) : {}; }
+  catch { return {}; }
+}
+
+function formatCricketScore(runs: number, wickets = 0, overs = "0.0"): string {
+  return `${runs}/${wickets} (${overs} Ov)`;
+}
+
+/** Increment overs: "12.4" → "12.5", "12.5" → "13.0" */
+function nextOver(o: string): string {
+  const [ov, bl] = (o || "0.0").split(".").map(Number);
+  return bl >= 5 ? `${ov + 1}.0` : `${ov}.${bl + 1}`;
+}
+
 export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Props) {
-  const [matches,     setMatches]     = useState<Match[]>([]);
-  const [players,     setPlayers]     = useState<Player[]>([]);
-  const [matchPlayers,setMatchPlayers]= useState<MatchPlayer[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [view,        setView]        = useState<MatchView>("list");
-  const [activeMatch, setActiveMatch] = useState<Match | null>(null);
-  const [showNew,     setShowNew]     = useState(false);
-  const [showMVP,     setShowMVP]     = useState(false);
-  const [saving,      setSaving]      = useState(false);
+  const [matches,      setMatches]      = useState<Match[]>([]);
+  const [players,      setPlayers]      = useState<Player[]>([]);
+  const [matchPlayers, setMatchPlayers] = useState<MatchPlayer[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [view,         setView]         = useState<MatchView>("list");
+  const [activeMatch,  setActiveMatch]  = useState<Match | null>(null);
+  const [showNew,      setShowNew]      = useState(false);
+  const [showMVP,      setShowMVP]      = useState(false);
+  const [saving,       setSaving]       = useState(false);
+  const [customRuns,   setCustomRuns]   = useState("");
 
   /* New match form state */
   const [form, setForm] = useState({
-    type:          "official" as "official" | "friendly",
-    opponent:      "",
-    date:          new Date().toISOString().split("T")[0],
+    type:            "official" as "official" | "friendly",
+    opponent:        "",
+    date:            new Date().toISOString().split("T")[0],
+    matchOvers:      "20",
     selectedPlayers: [] as string[],
-    teamA:         [] as string[],
-    teamB:         [] as string[],
+    teamA:           [] as string[],
+    teamB:           [] as string[],
   });
 
   const load = useCallback(async () => {
@@ -81,6 +113,8 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
     if (form.type === "friendly" && form.selectedPlayers.length < 2) return;
 
     setSaving(true);
+    const initNotes: CricketData = { total_ovs: parseInt(form.matchOvers) || 20 };
+
     const { data: match, error } = await supabase
       .from("matches")
       .insert({
@@ -88,6 +122,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
         opponent_name: form.type === "official" ? form.opponent.trim() : null,
         match_date:    form.date,
         status:        "upcoming",
+        notes:         JSON.stringify(initNotes),
       })
       .select()
       .single();
@@ -103,7 +138,6 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
       await supabase.from("match_players").insert(rows);
       setMatchPlayers((prev) => [...prev, ...rows.map((r, i) => ({ ...r, id: `${match.id}-${i}`, created_at: new Date().toISOString() }))]);
     } else if (form.type === "official") {
-      // mark all available players on "home" side
       const rows = players
         .filter((p) => p.is_available)
         .map((p) => ({ match_id: match.id, player_id: p.id, team_side: "home" as const }));
@@ -115,19 +149,49 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
     setShowNew(false);
     setActiveMatch(match as Match);
     setView("scoreboard");
-    setForm({ type: "official", opponent: "", date: new Date().toISOString().split("T")[0], selectedPlayers: [], teamA: [], teamB: [] });
+    setForm({ type: "official", opponent: "", date: new Date().toISOString().split("T")[0], matchOvers: "20", selectedPlayers: [], teamA: [], teamB: [] });
   }
 
-  /* ── Update score ── */
-  async function updateScore(match: Match, side: "home" | "away" | "a" | "b", delta: number) {
+  /* ── Update runs (+ wicket & over in notes) ── */
+  async function addRuns(match: Match, side: "home" | "away" | "a" | "b", runs: number) {
     if (!isAdmin) { onAdminRequired(); return; }
-    const field = side === "home" ? "score_home" : side === "away" ? "score_away" : side === "a" ? "team_a_score" : "team_b_score";
-    const current = match[field as keyof Match] as number;
-    const next = Math.max(0, current + delta);
-    const updated = { ...match, [field]: next };
+    const isOfficial = match.type === "official";
+    const runsField = side === "home" ? "score_home"
+                    : side === "away" ? "score_away"
+                    : side === "a"    ? "team_a_score"
+                    :                   "team_b_score";
+    const currentRuns = match[runsField as keyof Match] as number;
+    const newRuns = Math.max(0, currentRuns + runs);
+    const updated = { ...match, [runsField]: newRuns };
     setActiveMatch(updated);
     setMatches((prev) => prev.map((m) => (m.id === match.id ? updated : m)));
-    await supabase.from("matches").update({ [field]: next }).eq("id", match.id);
+    await supabase.from("matches").update({ [runsField]: newRuns }).eq("id", match.id);
+  }
+
+  async function addWicket(match: Match, side: "home" | "away" | "a" | "b") {
+    if (!isAdmin) { onAdminRequired(); return; }
+    const cric = parseCricket(match.notes);
+    const wKey = side === "home" ? "home_w" : side === "away" ? "away_w" : side === "a" ? "a_w" : "b_w";
+    const current = (cric[wKey] ?? 0);
+    if (current >= 10) return; // max 10 wickets
+    cric[wKey] = current + 1;
+    const newNotes = JSON.stringify(cric);
+    const updated = { ...match, notes: newNotes };
+    setActiveMatch(updated);
+    setMatches((prev) => prev.map((m) => (m.id === match.id ? updated : m)));
+    await supabase.from("matches").update({ notes: newNotes }).eq("id", match.id);
+  }
+
+  async function addBall(match: Match, side: "home" | "away" | "a" | "b") {
+    if (!isAdmin) { onAdminRequired(); return; }
+    const cric = parseCricket(match.notes);
+    const oKey = side === "home" ? "home_o" : side === "away" ? "away_o" : side === "a" ? "a_o" : "b_o";
+    cric[oKey] = nextOver(cric[oKey] ?? "0.0");
+    const newNotes = JSON.stringify(cric);
+    const updated = { ...match, notes: newNotes };
+    setActiveMatch(updated);
+    setMatches((prev) => prev.map((m) => (m.id === match.id ? updated : m)));
+    await supabase.from("matches").update({ notes: newNotes }).eq("id", match.id);
   }
 
   /* ── Set match status ── */
@@ -149,41 +213,95 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
     setShowMVP(false);
   }
 
-  /* ── Shareable scorecard text ── */
+  /* ── Cricket WhatsApp scorecard ── */
   function shareScorecard(match: Match) {
-    const title = match.type === "official"
-      ? `${APP_CONFIG.appName} vs ${match.opponent_name}`
-      : `Friendly: Team A vs Team B`;
-    const score = match.type === "official"
-      ? `${match.score_home} – ${match.score_away}`
-      : `${match.team_a_score} – ${match.team_b_score}`;
-    const winner = match.type === "official"
-      ? (match.score_home > match.score_away ? "🏆 We Won!" : match.score_home < match.score_away ? "😞 We Lost" : "🤝 Draw")
-      : (match.team_a_score > match.team_b_score ? "🏆 Team A Wins!" : match.team_a_score < match.team_b_score ? "🏆 Team B Wins!" : "🤝 Draw");
-    const mvp = match.mvp_player_id ? `⭐ MVP: ${getPlayerById(match.mvp_player_id)?.name}` : "";
-    const text = `⚽ *${title}*\n📅 ${match.match_date}\n🔢 Final Score: *${score}*\n${winner}\n${mvp}\n\n#${APP_CONFIG.appName.replace(/\s+/g, "")}`;
-    if (navigator.share) {
-      navigator.share({ text }).catch(() => navigator.clipboard.writeText(text));
+    const cric = parseCricket(match.notes);
+    const mvpName = match.mvp_player_id ? getPlayerById(match.mvp_player_id)?.name : null;
+
+    if (match.type === "official") {
+      const homeScore = formatCricketScore(match.score_home, cric.home_w ?? 0, cric.home_o ?? "0.0");
+      const awayScore = formatCricketScore(match.score_away, cric.away_w ?? 0, cric.away_o ?? "0.0");
+      const diff = Math.abs(match.score_home - match.score_away);
+      const result = match.score_home > match.score_away
+        ? `🏆 WON by ${diff} runs!`
+        : match.score_home < match.score_away
+        ? `😞 LOST by ${diff} runs`
+        : "🤝 Match Tied!";
+      const text = [
+        `🏏 *${APP_CONFIG.appName}*`,
+        `Match vs ${match.opponent_name} | ${match.match_date}`,
+        ``,
+        `🏏 SCORECARD`,
+        `${APP_CONFIG.appName}: ${homeScore}`,
+        `${match.opponent_name}: ${awayScore}`,
+        ``,
+        result,
+        mvpName ? `⭐ MVP: ${mvpName}` : "",
+        ``,
+        `#${APP_CONFIG.appName.replace(/\s+/g, "")}`,
+      ].filter((l) => l !== undefined).join("\n");
+      if (navigator.share) {
+        navigator.share({ text }).catch(() => navigator.clipboard.writeText(text));
+      } else {
+        navigator.clipboard.writeText(text);
+        alert("Cricket scorecard copied to clipboard!");
+      }
     } else {
-      navigator.clipboard.writeText(text);
-      alert("Scorecard copied to clipboard!");
+      const aScore = formatCricketScore(match.team_a_score, cric.a_w ?? 0, cric.a_o ?? "0.0");
+      const bScore = formatCricketScore(match.team_b_score, cric.b_w ?? 0, cric.b_o ?? "0.0");
+      const result = match.team_a_score > match.team_b_score
+        ? "🏆 Team A Won!"
+        : match.team_a_score < match.team_b_score
+        ? "🏆 Team B Won!"
+        : "🤝 Match Tied!";
+      const text = [
+        `🏏 *${APP_CONFIG.appName} — Friendly*`,
+        match.match_date,
+        ``,
+        `🏏 SCORECARD`,
+        `Team A: ${aScore}`,
+        `Team B: ${bScore}`,
+        ``,
+        result,
+        mvpName ? `⭐ MVP: ${mvpName}` : "",
+        ``,
+        `#${APP_CONFIG.appName.replace(/\s+/g, "")}`,
+      ].filter((l) => l !== undefined).join("\n");
+      if (navigator.share) {
+        navigator.share({ text }).catch(() => navigator.clipboard.writeText(text));
+      } else {
+        navigator.clipboard.writeText(text);
+        alert("Cricket scorecard copied to clipboard!");
+      }
     }
   }
 
   if (loading) return <div className="flex justify-center items-center h-40"><Loader2 className="animate-spin text-emerald-500" size={28} /></div>;
 
-  /* ── Scoreboard view ── */
+  /* ══════════════════════════════════════════
+     SCOREBOARD VIEW
+  ══════════════════════════════════════════ */
   if (view === "scoreboard" && activeMatch) {
-    const isOfficial = activeMatch.type === "official";
-    const homeScore  = activeMatch.score_home;
-    const awayScore  = activeMatch.score_away;
-    const aScore     = activeMatch.team_a_score;
-    const bScore     = activeMatch.team_b_score;
-    const isLive      = activeMatch.status === "live";
-    const isCompleted = activeMatch.status === "completed";
+    const isOfficial   = activeMatch.type === "official";
+    const isLive       = activeMatch.status === "live";
+    const isCompleted  = activeMatch.status === "completed";
+    const cric         = parseCricket(activeMatch.notes);
+    const totalOvs     = cric.total_ovs ?? 20;
+
+    const homeRuns = activeMatch.score_home;
+    const awayRuns = activeMatch.score_away;
+    const aRuns    = activeMatch.team_a_score;
+    const bRuns    = activeMatch.team_b_score;
+
     const teamAPlayers = matchPlayers.filter((mp) => mp.match_id === activeMatch.id && mp.team_side === "team_a").map((mp) => getPlayerById(mp.player_id)).filter(Boolean) as Player[];
     const teamBPlayers = matchPlayers.filter((mp) => mp.match_id === activeMatch.id && mp.team_side === "team_b").map((mp) => getPlayerById(mp.player_id)).filter(Boolean) as Player[];
-    const mvpPlayer = activeMatch.mvp_player_id ? getPlayerById(activeMatch.mvp_player_id) : null;
+    const mvpPlayer    = activeMatch.mvp_player_id ? getPlayerById(activeMatch.mvp_player_id) : null;
+
+    /* Score strings for display */
+    const homeScoreStr = formatCricketScore(homeRuns, cric.home_w ?? 0, cric.home_o ?? "0.0");
+    const awayScoreStr = formatCricketScore(awayRuns, cric.away_w ?? 0, cric.away_o ?? "0.0");
+    const aScoreStr    = formatCricketScore(aRuns, cric.a_w ?? 0, cric.a_o ?? "0.0");
+    const bScoreStr    = formatCricketScore(bRuns, cric.b_w ?? 0, cric.b_o ?? "0.0");
 
     return (
       <div className="px-4 pt-4 pb-28 scroll-panel overflow-y-auto">
@@ -191,55 +309,98 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
           ← Back to Matches
         </button>
 
-        {/* Match header */}
+        {/* Match header card */}
         <div className="bg-gray-900 rounded-3xl p-5 text-white mb-4 shadow-xl">
           <div className="flex items-center justify-between mb-1">
             <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${isLive ? "bg-red-500 animate-pulse" : isCompleted ? "bg-gray-600" : "bg-blue-500"}`}>
               {isLive ? "🔴 LIVE" : isCompleted ? "FT" : "UPCOMING"}
             </span>
-            <span className="text-xs text-gray-400">{activeMatch.match_date}</span>
+            <span className="text-xs text-gray-400">{activeMatch.match_date} · {totalOvs} Ov</span>
           </div>
 
-          {/* Score display */}
+          {/* Cricket Score display */}
           <div className="flex items-center justify-between mt-4">
             <div className="text-center flex-1">
-              <p className="text-xs text-gray-400 mb-1 font-semibold uppercase tracking-wider truncate">
+              <p className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider truncate">
                 {isOfficial ? APP_CONFIG.appName : "Team A"}
               </p>
-              <p className="text-6xl font-black tabular-nums">
-                {isOfficial ? homeScore : aScore}
+              <p className="text-3xl font-black tabular-nums leading-tight">
+                {isOfficial ? homeScoreStr : aScoreStr}
               </p>
             </div>
-            <div className="text-gray-500 text-2xl font-light mx-2">–</div>
+            <div className="text-gray-500 text-xl font-light mx-2">vs</div>
             <div className="text-center flex-1">
-              <p className="text-xs text-gray-400 mb-1 font-semibold uppercase tracking-wider truncate">
+              <p className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider truncate">
                 {isOfficial ? (activeMatch.opponent_name ?? "Opponent") : "Team B"}
               </p>
-              <p className="text-6xl font-black tabular-nums">
-                {isOfficial ? awayScore : bScore}
+              <p className="text-3xl font-black tabular-nums leading-tight">
+                {isOfficial ? awayScoreStr : bScoreStr}
               </p>
             </div>
           </div>
 
-          {/* Score controls (admin) */}
-          {!isCompleted && (
-            <div className="flex items-center justify-between mt-5 gap-2">
-              {/* Home/A side */}
-              <div className="flex gap-2 flex-1 justify-center">
-                <button onClick={() => updateScore(activeMatch, isOfficial ? "home" : "a", -1)} className="bg-white/10 hover:bg-white/20 rounded-xl p-3 transition-colors">
-                  <Minus size={18} />
-                </button>
-                <button onClick={() => updateScore(activeMatch, isOfficial ? "home" : "a", 1)} className="bg-emerald-500 hover:bg-emerald-400 rounded-xl px-5 py-3 font-bold transition-colors">
-                  +Goal
-                </button>
-              </div>
-              <div className="flex gap-2 flex-1 justify-center">
-                <button onClick={() => updateScore(activeMatch, isOfficial ? "away" : "b", 1)} className="bg-emerald-500 hover:bg-emerald-400 rounded-xl px-5 py-3 font-bold transition-colors">
-                  +Goal
-                </button>
-                <button onClick={() => updateScore(activeMatch, isOfficial ? "away" : "b", -1)} className="bg-white/10 hover:bg-white/20 rounded-xl p-3 transition-colors">
-                  <Minus size={18} />
-                </button>
+          {/* Admin cricket controls */}
+          {!isCompleted && isAdmin && (
+            <div className="mt-5 space-y-3">
+              {/* Two innings panels side-by-side */}
+              {(["left", "right"] as const).map((side) => {
+                const inSide   = isOfficial ? (side === "left" ? "home" : "away") : (side === "left" ? "a" : "b");
+                const label    = isOfficial ? (side === "left" ? (APP_CONFIG.appName.split(" ")[0]) : (activeMatch.opponent_name ?? "Opp")) : (side === "left" ? "Team A" : "Team B");
+                return (
+                  <div key={side} className="bg-white/10 rounded-2xl p-3">
+                    <p className="text-xs font-bold text-gray-300 mb-2 text-center truncate">{label}</p>
+                    {/* Run buttons */}
+                    <div className="flex gap-1.5 flex-wrap justify-center mb-2">
+                      {[1, 2, 4, 6].map((r) => (
+                        <button
+                          key={r}
+                          onClick={() => addRuns(activeMatch, inSide as "home"|"away"|"a"|"b", r)}
+                          className={`rounded-xl px-3 py-2 text-sm font-black transition-colors
+                            ${r === 4 ? "bg-blue-500 hover:bg-blue-400" : r === 6 ? "bg-yellow-500 hover:bg-yellow-400 text-gray-900" : "bg-emerald-500 hover:bg-emerald-400"}`}
+                        >
+                          +{r}
+                        </button>
+                      ))}
+                      <button
+                        onClick={() => {
+                          const v = parseInt(customRuns);
+                          if (!isNaN(v) && v > 0) { addRuns(activeMatch, inSide as "home"|"away"|"a"|"b", v); setCustomRuns(""); }
+                        }}
+                        className="bg-gray-600 hover:bg-gray-500 rounded-xl px-3 py-2 text-sm font-black"
+                      >
+                        +?
+                      </button>
+                    </div>
+                    {/* Wicket + Ball buttons */}
+                    <div className="flex gap-1.5 justify-center">
+                      <button
+                        onClick={() => addWicket(activeMatch, inSide as "home"|"away"|"a"|"b")}
+                        className="bg-red-600 hover:bg-red-500 rounded-xl px-3 py-2 text-xs font-bold flex-1"
+                      >
+                        🎯 Wicket
+                      </button>
+                      <button
+                        onClick={() => addBall(activeMatch, inSide as "home"|"away"|"a"|"b")}
+                        className="bg-purple-600 hover:bg-purple-500 rounded-xl px-3 py-2 text-xs font-bold flex-1"
+                      >
+                        ⚾ +Ball
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Custom runs input */}
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min="1"
+                  placeholder="Custom runs"
+                  value={customRuns}
+                  onChange={(e) => setCustomRuns(e.target.value)}
+                  className="flex-1 bg-white/10 border border-white/20 text-white placeholder-gray-500 rounded-xl px-3 py-2 text-sm outline-none"
+                />
+                <span className="text-xs text-gray-400 self-center">→ tap +? above</span>
               </div>
             </div>
           )}
@@ -274,7 +435,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                   onClick={() => shareScorecard(activeMatch)}
                   className="flex-1 bg-blue-500 hover:bg-blue-400 py-2.5 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-1.5"
                 >
-                  <Share2 size={15} /> Share
+                  <Share2 size={15} /> WhatsApp
                 </button>
               </>
             )}
@@ -286,7 +447,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
           <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 flex items-center gap-4 mb-4">
             {mvpPlayer.avatar_url ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={mvpPlayer.avatar_url} alt={mvpPlayer.name} className="w-14 h-14 rounded-full object-cover border-2 border-yellow-400" />
+              <img src={mvpPlayer.avatar_url} alt={mvpPlayer.name} className="w-14 h-14 rounded-full object-cover object-top border-2 border-yellow-400" />
             ) : (
               <div className="w-14 h-14 rounded-full bg-yellow-200 flex items-center justify-center text-xl font-black text-yellow-600">
                 {mvpPlayer.name[0]}
@@ -311,7 +472,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                     <div key={p.id} className="flex flex-col items-center gap-0.5">
                       {p.avatar_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={p.avatar_url} alt={p.name} className="w-8 h-8 rounded-full object-cover" />
+                        <img src={p.avatar_url} alt={p.name} className="w-8 h-8 rounded-full object-cover object-top" />
                       ) : (
                         <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-400">
                           {p.name[0]}
@@ -354,7 +515,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                   >
                     {p.avatar_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={p.avatar_url} alt={p.name} className="w-14 h-14 rounded-full object-cover" />
+                      <img src={p.avatar_url} alt={p.name} className="w-14 h-14 rounded-full object-cover object-top" />
                     ) : (
                       <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center text-lg font-black text-gray-400">
                         {p.name[0]}
@@ -371,7 +532,9 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
     );
   }
 
-  /* ── Match list view ── */
+  /* ══════════════════════════════════════════
+     MATCH LIST VIEW
+  ══════════════════════════════════════════ */
   return (
     <div className="px-4 pt-4 pb-28 scroll-panel overflow-y-auto">
       {/* Header */}
@@ -395,11 +558,12 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
         <div className="space-y-3">
           {matches.map((match) => {
             const isOfficial = match.type === "official";
-            const homeWin = isOfficial && match.score_home > match.score_away;
-            const draw    = isOfficial && match.score_home === match.score_away;
-            const aWin    = !isOfficial && match.team_a_score > match.team_b_score;
+            const cric       = parseCricket(match.notes);
+            const homeWin    = isOfficial && match.score_home > match.score_away;
+            const draw       = isOfficial && match.score_home === match.score_away;
+            const aWin       = !isOfficial && match.team_a_score > match.team_b_score;
             const participants = getMatchParticipants(match.id);
-            const mvpP = match.mvp_player_id ? getPlayerById(match.mvp_player_id) : null;
+            const mvpP         = match.mvp_player_id ? getPlayerById(match.mvp_player_id) : null;
 
             return (
               <button
@@ -411,7 +575,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                   <div>
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full mr-2
                       ${match.type === "official" ? "bg-blue-100 text-blue-600" : "bg-purple-100 text-purple-600"}`}>
-                      {match.type === "official" ? "Official" : "Friendly"}
+                      {match.type === "official" ? "🏏 Official" : "🤝 Friendly"}
                     </span>
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full
                       ${match.status === "live" ? "bg-red-100 text-red-600 animate-pulse" : match.status === "completed" ? "bg-gray-100 text-gray-500" : "bg-amber-100 text-amber-600"}`}>
@@ -427,21 +591,30 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                       {isOfficial ? `vs ${match.opponent_name}` : "Team A vs Team B"}
                     </p>
                     {match.status !== "upcoming" && (
-                      <p className="text-2xl font-black mt-0.5">
-                        {isOfficial ? `${match.score_home} – ${match.score_away}` : `${match.team_a_score} – ${match.team_b_score}`}
-                      </p>
+                      <div className="mt-1 space-y-0.5">
+                        <p className="text-sm font-black text-gray-800">
+                          {isOfficial
+                            ? formatCricketScore(match.score_home, cric.home_w ?? 0, cric.home_o ?? "0.0")
+                            : formatCricketScore(match.team_a_score, cric.a_w ?? 0, cric.a_o ?? "0.0")}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {isOfficial
+                            ? formatCricketScore(match.score_away, cric.away_w ?? 0, cric.away_o ?? "0.0")
+                            : formatCricketScore(match.team_b_score, cric.b_w ?? 0, cric.b_o ?? "0.0")}
+                        </p>
+                      </div>
                     )}
                   </div>
 
                   {match.status === "completed" && isOfficial && (
                     <span className={`text-xs font-bold px-3 py-1 rounded-full
                       ${homeWin ? "bg-emerald-100 text-emerald-700" : draw ? "bg-gray-100 text-gray-600" : "bg-red-100 text-red-600"}`}>
-                      {homeWin ? "Won" : draw ? "Draw" : "Lost"}
+                      {homeWin ? "Won" : draw ? "Tied" : "Lost"}
                     </span>
                   )}
                   {match.status === "completed" && !isOfficial && (
                     <span className="text-xs font-bold px-3 py-1 rounded-full bg-purple-100 text-purple-700">
-                      {aWin ? "Team A" : match.team_a_score < match.team_b_score ? "Team B" : "Draw"}
+                      {aWin ? "Team A" : match.team_a_score < match.team_b_score ? "Team B" : "Tied"}
                     </span>
                   )}
                 </div>
@@ -452,7 +625,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                     {participants.slice(0, 6).map((p) => (
                       p.avatar_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img key={p.id} src={p.avatar_url} alt={p.name} className="w-7 h-7 rounded-full border-2 border-white object-cover" />
+                        <img key={p.id} src={p.avatar_url} alt={p.name} className="w-7 h-7 rounded-full border-2 border-white object-cover object-top" />
                       ) : (
                         <div key={p.id} className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-[10px] font-bold text-gray-500">
                           {p.name[0]}
@@ -495,7 +668,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                   className={`py-3 rounded-xl text-sm font-semibold capitalize transition-colors
                     ${form.type === t ? "bg-emerald-500 text-white" : "bg-gray-100 text-gray-500"}`}
                 >
-                  {t === "official" ? "⚽ Official" : "🤝 Friendly"}
+                  {t === "official" ? "🏏 Official" : "🤝 Friendly"}
                 </button>
               ))}
             </div>
@@ -507,6 +680,24 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
               value={form.date}
               onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
             />
+
+            {/* Match Overs */}
+            <div className="mb-3">
+              <label className="text-xs text-gray-500 font-semibold mb-1 block">Match Overs</label>
+              <select
+                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-white outline-none focus:border-emerald-400"
+                value={form.matchOvers}
+                onChange={(e) => setForm((f) => ({ ...f, matchOvers: e.target.value }))}
+              >
+                <option value="5">5 Overs</option>
+                <option value="6">6 Overs</option>
+                <option value="10">10 Overs</option>
+                <option value="12">12 Overs</option>
+                <option value="15">15 Overs</option>
+                <option value="20">20 Overs (T20)</option>
+                <option value="50">50 Overs (ODI)</option>
+              </select>
+            </div>
 
             {/* Official: opponent name */}
             {form.type === "official" && (
@@ -542,7 +733,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                         />
                         {p.avatar_url ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={p.avatar_url} alt={p.name} className="w-7 h-7 rounded-full object-cover" />
+                          <img src={p.avatar_url} alt={p.name} className="w-7 h-7 rounded-full object-cover object-top" />
                         ) : (
                           <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-400">{p.name[0]}</div>
                         )}

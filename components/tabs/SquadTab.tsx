@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Camera, Plus, Trash2, User, Users, Phone, Loader2, X } from "lucide-react";
+import { Camera, Plus, Trash2, User, Phone, Loader2, X, Users } from "lucide-react";
 import imageCompression from "browser-image-compression";
 import { supabase } from "@/lib/supabase";
 import type { Player } from "@/types";
@@ -11,23 +11,23 @@ interface Props {
   onAdminRequired: () => void;
 }
 
-const ROLE_COLORS: Record<string, string> = {
-  "Batsman": "bg-blue-100 text-blue-700",
-  "Bowler": "bg-red-100 text-red-700",
-  "All-rounder": "bg-purple-100 text-purple-700",
-  "Wicket-keeper": "bg-yellow-100 text-yellow-700",
-  "Captain": "bg-green-100 text-green-700",
-};
-
 const ROLES = ["Batsman", "Bowler", "All-rounder", "Wicket-keeper", "Captain"];
 
+const ROLE_COLORS: Record<string, string> = {
+  Batsman:         "bg-blue-100 text-blue-700",
+  Bowler:          "bg-red-100 text-red-700",
+  "All-rounder":   "bg-emerald-100 text-emerald-700",
+  "Wicket-keeper": "bg-amber-100 text-amber-700",
+  Captain:         "bg-purple-100 text-purple-700",
+};
+
 export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
-  const [players, setPlayers]       = useState<Player[]>([]);
-  const [loading, setLoading]       = useState(true);
+  const [players, setPlayers]         = useState<Player[]>([]);
+  const [loading, setLoading]         = useState(true);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
-  const [showAdd, setShowAdd]       = useState(false);
-  const [saving, setSaving]         = useState(false);
-  const [form, setForm]             = useState({
+  const [showAdd, setShowAdd]         = useState(false);
+  const [saving, setSaving]           = useState(false);
+  const [form, setForm]               = useState({
     name: "", role: "Batsman", jersey_number: "", phone: "",
   });
 
@@ -108,7 +108,7 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
     setSaving(false);
     if (!error && data) {
       setPlayers((p) => [...p, data as Player]);
-      setForm({ name: "", role: "Midfielder", jersey_number: "", phone: "" });
+      setForm({ name: "", role: "Batsman", jersey_number: "", phone: "" });
       setShowAdd(false);
     }
   }
@@ -264,7 +264,7 @@ function PlayerCard({ player, isAdmin, uploadingId, onToggle, onUpload, onDelete
           <img
             src={player.avatar_url}
             alt={player.name}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-cover object-top"
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200">
