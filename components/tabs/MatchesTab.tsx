@@ -820,7 +820,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                     className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-400"
                     placeholder={APP_CONFIG.appName}
                     value={form.team1Name}
-                    onChange={(e) => setForm((f) => ({ ...f, team1Name: e.target.value }))}
+                    onChange={(e) => setForm((f) => ({ ...f, team1Name: e.target.value as any }))}
                   />
                 </div>
                 <div>
