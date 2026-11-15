@@ -11,7 +11,7 @@ interface Props {
   onAdminRequired: () => void;
 }
 
-"const ROLE_COLORS: Record<string, string> = {
+const ROLE_COLORS: Record<string, string> = {
   "Batsman": "bg-blue-100 text-blue-700",
   "Bowler": "bg-red-100 text-red-700",
   "All-rounder": "bg-purple-100 text-purple-700",
