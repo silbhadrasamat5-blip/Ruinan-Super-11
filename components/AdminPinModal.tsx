@@ -5,11 +5,12 @@ import { Lock, X } from "lucide-react";
 import { APP_CONFIG } from "@/lib/config";
 
 interface Props {
-  onSuccess: () => void;
+  mode?: "admin" | "player";
+  onSuccess: (role: "admin" | "player") => void;
   onClose: () => void;
 }
 
-export default function AdminPinModal({ onSuccess, onClose }: Props) {
+export default function AdminPinModal({ mode = "admin", onSuccess, onClose }: Props) {
   const [pin, setPin] = useState(["", "", "", ""]);
   const [shake, setShake] = useState(false);
   const refs = [
@@ -33,11 +34,12 @@ export default function AdminPinModal({ onSuccess, onClose }: Props) {
       refs[index + 1].current?.focus();
     }
 
-    // Check when all 4 filled
     if (index === 3 && digit) {
       const entered = [...next].join("");
       if (entered === APP_CONFIG.adminPin) {
-        onSuccess();
+        onSuccess("admin");
+      } else if (mode === "player" && entered === APP_CONFIG.playerPin) {
+        onSuccess("player");
       } else {
         setShake(true);
         setTimeout(() => {
@@ -58,7 +60,6 @@ export default function AdminPinModal({ onSuccess, onClose }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-6">
       <div className="bg-white rounded-3xl w-full max-w-xs p-8 shadow-2xl relative">
-        {/* Close */}
         <button
           onClick={onClose}
           className="absolute top-4 right-4 p-1 text-gray-400 hover:text-gray-600"
@@ -66,19 +67,21 @@ export default function AdminPinModal({ onSuccess, onClose }: Props) {
           <X size={20} />
         </button>
 
-        {/* Icon */}
         <div className="flex justify-center mb-5">
           <div className="bg-emerald-100 rounded-full p-4">
             <Lock className="text-emerald-600" size={28} />
           </div>
         </div>
 
-        <h2 className="text-center text-xl font-bold mb-1">Admin Access</h2>
+        <h2 className="text-center text-xl font-bold mb-1">
+          {mode === "player" ? "Player Access" : "Admin Access"}
+        </h2>
         <p className="text-center text-sm text-gray-500 mb-7">
-          Enter the 4-digit PIN to continue
+          {mode === "player"
+            ? "Enter the 4-digit Player PIN to add a player"
+            : "Enter the 4-digit Admin PIN to continue"}
         </p>
 
-        {/* PIN boxes */}
         <div
           className={`flex justify-center gap-4 mb-2 ${shake ? "animate-bounce" : ""}`}
           style={shake ? { animation: "shake 0.4s ease-in-out" } : {}}
