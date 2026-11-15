@@ -11,15 +11,15 @@ interface Props {
   onAdminRequired: () => void;
 }
 
-const ROLES = ["Goalkeeper", "Defender", "Midfielder", "Forward", "All-rounder"];
-
-const ROLE_COLORS: Record<string, string> = {
-  Goalkeeper:   "bg-yellow-100 text-yellow-700",
-  Defender:     "bg-blue-100  text-blue-700",
-  Midfielder:   "bg-purple-100 text-purple-700",
-  Forward:      "bg-red-100   text-red-700",
-  "All-rounder":"bg-gray-100  text-gray-600",
+"const ROLE_COLORS: Record<string, string> = {
+  "Batsman": "bg-blue-100 text-blue-700",
+  "Bowler": "bg-red-100 text-red-700",
+  "All-rounder": "bg-purple-100 text-purple-700",
+  "Wicket-keeper": "bg-yellow-100 text-yellow-700",
+  "Captain": "bg-green-100 text-green-700",
 };
+
+const ROLES = ["Batsman", "Bowler", "All-rounder", "Wicket-keeper", "Captain"];
 
 export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
   const [players, setPlayers]       = useState<Player[]>([]);
@@ -28,7 +28,7 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
   const [showAdd, setShowAdd]       = useState(false);
   const [saving, setSaving]         = useState(false);
   const [form, setForm]             = useState({
-    name: "", role: "Midfielder", jersey_number: "", phone: "",
+    name: "", role: "Batsman", jersey_number: "", phone: "",
   });
 
   const fetchPlayers = useCallback(async () => {
