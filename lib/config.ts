@@ -1,6 +1,6 @@
-// ─────────────────────────────────────────────────────────────
-// APP CONFIGURATION  — edit this file to customise the app.
-// ─────────────────────────────────────────────────────────────
+// ============================================================
+// APP CONFIGURATION - edit this file to customise the app.
+// ============================================================
 
 export const APP_CONFIG = {
   /** Display name shown in the header and throughout the app. */
@@ -8,10 +8,13 @@ export const APP_CONFIG = {
 
   /**
    * 4-digit admin PIN.
-   * ⚠️  Change this before sharing the link with your team!
+   * Change this before sharing the link with your team!
    * The PIN is checked client-side; it is NOT stored in the database.
    */
-  adminPin: "9647",
+  adminPin: "3180",
+
+  /** 4-digit player PIN for normal team members. */
+  playerPin: "9647",
 
   /** Local currency symbol shown next to amounts. */
   currency: "₹",
