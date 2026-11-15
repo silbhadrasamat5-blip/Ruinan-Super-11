@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Camera, Plus, Trash2, User, Phone, Loader2, X } from "lucide-react";
+import { Camera, Plus, Trash2, Users, Phone, Loader2, X } from "lucide-react";
 import imageCompression from "browser-image-compression";
 import { supabase } from "@/lib/supabase";
 import type { Player } from "@/types";
