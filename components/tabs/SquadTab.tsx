@@ -8,7 +8,9 @@ import type { Player } from "@/types";
 
 interface Props {
   isAdmin: boolean;
+  isPlayer?: boolean;
   onAdminRequired: () => void;
+  onPlayerRequired?: () => void;
 }
 
 const ROLES = ["Batsman", "Bowler", "All-rounder", "Wicket-keeper", "Captain"];
@@ -21,7 +23,12 @@ const ROLE_COLORS: Record<string, string> = {
   Captain:         "bg-purple-100 text-purple-700",
 };
 
-export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
+export default function SquadTab({
+  isAdmin,
+  isPlayer = false,
+  onAdminRequired,
+  onPlayerRequired,
+}: Props) {
   const [players, setPlayers]         = useState<Player[]>([]);
   const [loading, setLoading]         = useState(true);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
@@ -90,11 +97,12 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
     }
   }
 
-  /* ── Add player (admin / playerPin verified) ── */
+  /* ── Add player (player or admin) ── */
   async function addPlayer() {
-    if (!isAdmin) { 
-      onAdminRequired(); 
-      return; 
+    if (!isAdmin && !isPlayer) {
+      if (onPlayerRequired) onPlayerRequired();
+      else onAdminRequired();
+      return;
     }
     if (!form.name.trim()) return;
     setSaving(true);
@@ -113,13 +121,10 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
       setPlayers((p) => [...p, data as Player]);
       setForm({ name: "", role: "Batsman", jersey_number: "", phone: "" });
       setShowAdd(false);
-    } else if (error) {
-      console.error("Error adding player:", error.message);
-      alert("Failed to add player. Please try again.");
     }
   }
 
-  /* ── Delete player (admin) ── */
+  /* ── Delete player (admin only) ── */
   async function deletePlayer(id: string) {
     if (!isAdmin) { onAdminRequired(); return; }
     if (!confirm("Remove this player from the squad?")) return;
@@ -128,6 +133,7 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
   }
 
   const available = players.filter((p) => p.is_available).length;
+  const skeletonItems = Array.from({ length: 4 }, (_, idx) => idx);
 
   return (
     <div className="px-4 pt-4 pb-28 scroll-panel overflow-y-auto">
@@ -138,12 +144,13 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
           <span className="font-semibold text-emerald-600">{available} available</span>
         </p>
         <button
-          onClick={() => { 
-            if (!isAdmin) { 
-              onAdminRequired(); 
-              return; 
-            } 
-            setShowAdd(true); 
+          onClick={() => {
+            if (!isAdmin && !isPlayer) {
+              if (onPlayerRequired) onPlayerRequired();
+              else onAdminRequired();
+              return;
+            }
+            setShowAdd(true);
           }}
           className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold px-3 py-2 rounded-full shadow-sm transition-colors"
         >
@@ -154,205 +161,107 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
       {/* Grid */}
       {loading ? (
         <div className="grid grid-cols-2 gap-3">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="rounded-2xl overflow-hidden shadow-sm">
-              <div className="aspect-square bg-gray-200 animate-pulse" />
-              <div className="p-2.5 bg-white space-y-2">
-                <div className="h-4 w-3/4 bg-gray-200 animate-pulse rounded" />
-                <div className="h-3 w-1/2 bg-gray-200 animate-pulse rounded" />
-              </div>
-            </div>
+          {skeletonItems.map((i) => (
+            <div key={i} className="bg-white rounded-2xl h-64 animate-pulse border border-gray-100" />
           ))}
         </div>
       ) : players.length === 0 ? (
-        <div className="text-center py-20 text-gray-400">
-          <Users size={48} className="mx-auto mb-3 opacity-30" />
-          <p className="font-medium">No players yet</p>
-          <p className="text-sm">Ask admin to add the squad</p>
+        <div className="text-center py-16 text-gray-400">
+          <Users size={40} className="mx-auto mb-3 opacity-40" />
+          <p className="font-medium text-gray-500">No players yet</p>
+          <p className="text-xs mt-1">Tap &ldquo;+ Add Player&rdquo; to build your squad</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3">
-          {players.map((p) => (
+          {players.map((player) => (
             <PlayerCard
-              key={p.id}
-              player={p}
+              key={player.id}
+              player={player}
               isAdmin={isAdmin}
-              uploadingId={uploadingId}
-              onToggle={toggleAvailability}
-              onUpload={handleAvatarUpload}
-              onDelete={deletePlayer}
+              uploading={uploadingId === player.id}
+              onToggle={() => toggleAvailability(player)}
+              onUpload={(file) => handleAvatarUpload(player, file)}
+              onDelete={() => deletePlayer(player.id)}
             />
           ))}
         </div>
       )}
 
-      {/* Add Player bottom sheet */}
+      {/* Add Player Modal */}
       {showAdd && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50">
-          <div className="bg-white w-full max-w-md rounded-t-3xl p-6 pb-8 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-5">
               <h3 className="text-lg font-bold">Add New Player</h3>
-              <button onClick={() => setShowAdd(false)} className="text-gray-400 hover:text-gray-600">
-                <X size={22} />
+              <button onClick={() => setShowAdd(false)} className="p-1 text-gray-400 hover:text-gray-600">
+                <X size={20} />
               </button>
             </div>
-            <div className="space-y-3">
-              <input
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-400"
-                placeholder="Full Name *"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              />
-              <select
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-white outline-none focus:border-emerald-400"
-                value={form.role}
-                onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}
-              >
-                {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-              </select>
-              <input
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-400"
-                placeholder="Jersey Number"
-                type="number"
-                min="1"
-                max="99"
-                value={form.jersey_number}
-                onChange={(e) => setForm((f) => ({ ...f, jersey_number: e.target.value }))}
-              />
-              <input
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-400"
-                placeholder="Phone Number"
-                type="tel"
-                value={form.phone}
-                onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
-              />
-            </div>
-            <div className="flex gap-3 mt-5">
-              <button
-                onClick={() => setShowAdd(false)}
-                className="flex-1 border border-gray-200 py-3 rounded-xl text-sm font-semibold text-gray-600"
-              >
-                Cancel
-              </button>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">
+                  Player Name *
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Silbhadra Samat"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-500 outline-none text-sm"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">
+                    Role
+                  </label>
+                  <select
+                    value={form.role}
+                    onChange={(e) => setForm({ ...form, role: e.target.value })}
+                    className="w-full px-3 py-3 rounded-xl border border-gray-200 focus:border-emerald-500 outline-none text-sm bg-white"
+                  >
+                    {ROLES.map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">
+                    Jersey #
+                  </label>
+                  <input
+                    type="number"
+                    placeholder="e.g. 18"
+                    value={form.jersey_number}
+                    onChange={(e) => setForm({ ...form, jersey_number: e.target.value })}
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-500 outline-none text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">
+                  Phone (Optional)
+                </label>
+                <input
+                  type="tel"
+                  placeholder="e.g. 9876543210"
+                  value={form.phone}
+                  onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-500 outline-none text-sm"
+                />
+              </div>
+
               <button
                 onClick={addPlayer}
                 disabled={saving || !form.name.trim()}
-                className="flex-1 bg-emerald-500 disabled:opacity-50 text-white py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
+                className="w-full py-3.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white font-semibold text-sm shadow-sm transition-colors flex items-center justify-center gap-2"
               >
-                {saving && <Loader2 size={14} className="animate-spin" />}
-                Add Player
+                {saving && <Loader2 size={16} className="animate-spin" />}
+                {saving ? "Adding..." : "Add to Squad"}
               </button>
             </div>
           </div>
         </div>
-      )}
-    </div>
-  );
-}
-
-/* ── Player Card sub-component ── */
-interface CardProps {
-  player: Player;
-  isAdmin: boolean;
-  uploadingId: string | null;
-  onToggle: (p: Player) => void;
-  onUpload: (p: Player, f: File) => void;
-  onDelete: (id: string) => void;
-}
-
-function PlayerCard({ player, isAdmin, uploadingId, onToggle, onUpload, onDelete }: CardProps) {
-  const fileRef = useRef<HTMLInputElement>(null);
-  const uploading = uploadingId === player.id;
-
-  return (
-    <div
-      className={`bg-white rounded-2xl overflow-hidden shadow-sm border transition-colors
-        ${player.is_available ? "border-emerald-100" : "border-gray-100"}`}
-    >
-      {/* Avatar */}
-      <div className="relative aspect-square bg-gray-100">
-        {player.avatar_url ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={player.avatar_url}
-            alt={player.name}
-            className="w-full h-full object-cover object-top"
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200">
-            <User size={44} className="text-gray-300" />
-          </div>
-        )}
-
-        {/* Camera button (always visible — public action) */}
-        <button
-          onClick={() => fileRef.current?.click()}
-          disabled={uploading}
-          className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 text-white rounded-full p-2 shadow transition-colors"
-        >
-          {uploading ? (
-            <Loader2 size={14} className="animate-spin" />
-          ) : (
-            <Camera size={14} />
-          )}
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) onUpload(player, file);
-            e.target.value = "";
-          }}
-        />
-
-        {/* Jersey number badge */}
-        {player.jersey_number != null && (
-          <div className="absolute top-2 left-2 bg-black/55 text-white text-[11px] font-black rounded-full w-7 h-7 flex items-center justify-center">
-            {player.jersey_number}
-          </div>
-        )}
-
-        {/* Admin delete */}
-        {isAdmin && (
-          <button
-            onClick={() => onDelete(player.id)}
-            className="absolute top-2 right-2 bg-red-500/80 hover:bg-red-600 text-white rounded-full p-1 shadow"
-          >
-            <Trash2 size={12} />
-          </button>
-        )}
-      </div>
-
-      {/* Info */}
-      <div className="p-2.5">
-        <p className="font-semibold text-sm truncate leading-tight">{player.name}</p>
-        <span
-          className={`text-[10px] px-2 py-0.5 rounded-full inline-block mt-1 font-medium
-            ${ROLE_COLORS[player.role] ?? "bg-gray-100 text-gray-600"}`}
-        >
-          {player.role}
-        </span>
-        {player.phone && (
-          <div className="flex items-center gap-1 mt-1.5">
-            <Phone size={10} className="text-gray-400 shrink-0" />
-            <span className="text-[11px] text-gray-500 truncate">{player.phone}</span>
-          </div>
-        )}
-
-        {/* Availability toggle */}
-        <button
-          onClick={() => onToggle(player)}
-          className={`mt-2.5 w-full py-2 rounded-xl text-xs font-bold tracking-wide transition-colors
-            ${player.is_available
-              ? "bg-emerald-500 hover:bg-emerald-600 text-white"
-              : "bg-gray-100 hover:bg-gray-200 text-gray-500"}`}
-        >
-          {player.is_available ? "✓ IN" : "✗ OUT"}
-        </button>
-      </div>
-    </div>
-  );
-}
