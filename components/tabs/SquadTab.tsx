@@ -90,9 +90,12 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
     }
   }
 
-  /* ── Add player (admin) ── */
+  /* ── Add player (admin / playerPin verified) ── */
   async function addPlayer() {
-    if (!isAdmin) { onAdminRequired(); return; }
+    if (!isAdmin) { 
+      onAdminRequired(); 
+      return; 
+    }
     if (!form.name.trim()) return;
     setSaving(true);
     const { data, error } = await supabase
@@ -110,6 +113,9 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
       setPlayers((p) => [...p, data as Player]);
       setForm({ name: "", role: "Batsman", jersey_number: "", phone: "" });
       setShowAdd(false);
+    } else if (error) {
+      console.error("Error adding player:", error.message);
+      alert("Failed to add player. Please try again.");
     }
   }
 
@@ -132,7 +138,13 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
           <span className="font-semibold text-emerald-600">{available} available</span>
         </p>
         <button
-          onClick={() => { if (!isAdmin) { onAdminRequired(); return; } setShowAdd(true); }}
+          onClick={() => { 
+            if (!isAdmin) { 
+              onAdminRequired(); 
+              return; 
+            } 
+            setShowAdd(true); 
+          }}
           className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-semibold px-3 py-2 rounded-full shadow-sm transition-colors"
         >
           <Plus size={15} /> Add Player
@@ -144,10 +156,10 @@ export default function SquadTab({ isAdmin, onAdminRequired }: Props) {
         <div className="grid grid-cols-2 gap-3">
           {Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="rounded-2xl overflow-hidden shadow-sm">
-              <div className="aspect-square skeleton" />
+              <div className="aspect-square bg-gray-200 animate-pulse" />
               <div className="p-2.5 bg-white space-y-2">
-                <div className="h-4 w-3/4 skeleton rounded" />
-                <div className="h-3 w-1/2 skeleton rounded" />
+                <div className="h-4 w-3/4 bg-gray-200 animate-pulse rounded" />
+                <div className="h-3 w-1/2 bg-gray-200 animate-pulse rounded" />
               </div>
             </div>
           ))}
