@@ -265,3 +265,117 @@ export default function SquadTab({
             </div>
           </div>
         </div>
+)}
+    </div>
+  );
+}
+
+/* ── Player Card Component ── */
+function PlayerCard({
+  player,
+  isAdmin,
+  uploading,
+  onToggle,
+  onUpload,
+  onDelete,
+}: {
+  player: Player;
+  isAdmin: boolean;
+  uploading: boolean;
+  onToggle: () => void;
+  onUpload: (file: File) => void;
+  onDelete: () => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div
+      className={`bg-white rounded-2xl overflow-hidden shadow-sm border transition-colors ${
+        player.is_available ? "border-emerald-100" : "border-gray-100"
+      }`}
+    >
+      {/* Avatar */}
+      <div className="relative aspect-square bg-gray-100">
+        {player.avatar_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={player.avatar_url}
+            alt={player.name}
+            className="w-full h-full object-cover object-top"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200">
+            <User size={44} className="text-gray-300" />
+          </div>
+        )}
+
+        {/* Camera button */}
+        <button
+          onClick={() => fileRef.current?.click()}
+          disabled={uploading}
+          className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 text-white rounded-full p-2 shadow transition-colors"
+        >
+          {uploading ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const fileList = e.target.files;
+            const f = fileList && fileList.length > 0 ? fileList.item(0) : null;
+            if (f) onUpload(f);
+            e.target.value = "";
+          }}
+        />
+
+        {/* Jersey badge */}
+        {player.jersey_number != null && (
+          <span className="absolute top-2 left-2 bg-black/60 text-white text-xs font-bold px-2 py-0.5 rounded-full">
+            #{player.jersey_number}
+          </span>
+        )}
+
+        {/* Delete button (Admin only) */}
+        {isAdmin && (
+          <button
+            onClick={onDelete}
+            className="absolute top-2 right-2 bg-red-500/90 hover:bg-red-600 text-white rounded-full p-1.5 shadow transition-colors"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
+      </div>
+
+      {/* Info */}
+      <div className="p-3">
+        <p className="font-bold text-gray-900 text-sm truncate">{player.name}</p>
+        <span
+          className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full mt-1 ${
+            ROLE_COLORS[player.role] ?? "bg-gray-100 text-gray-600"
+          }`}
+        >
+          {player.role}
+        </span>
+
+        {player.phone && (
+          <p className="flex items-center gap-1 text-[11px] text-gray-400 mt-1.5 truncate">
+            <Phone size={10} /> {player.phone}
+          </p>
+        )}
+
+        <button
+          onClick={onToggle}
+          className={`w-full mt-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+            player.is_available
+              ? "bg-emerald-500 text-white"
+              : "bg-gray-100 text-gray-500"
+          }`}
+        >
+          {player.is_available ? "IN (Available)" : "OUT"}
+        </button>
+      </div>
+    </div>
+  );
+}
