@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import {
-  Plus, Shuffle, Star, Share2,
-  X, Loader2, Swords, Users,
+  Plus, Shuffle, Star, Share2, Trash2,
+  X, Loader2, Swords,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { APP_CONFIG } from "@/lib/config";
@@ -22,6 +22,11 @@ type MatchView = "list" | "scoreboard";
 ───────────────────────────────────────────── */
 interface CricketData {
   total_ovs?: number; // match overs limit e.g. 20 for T20
+  // custom team names (no DB migration needed — stored in notes JSON)
+  home_team?: string; // Team 1 name for official matches
+  a_name?: string;    // Team A name for friendly matches
+  b_name?: string;    // Team B name for friendly matches
+  // innings data
   home_w?: number;    // home wickets fallen
   home_o?: string;    // home overs faced e.g. "12.0"
   away_w?: number;
@@ -47,6 +52,20 @@ function nextOver(o: string): string {
   return bl >= 5 ? `${ov + 1}.0` : `${ov}.${bl + 1}`;
 }
 
+/** Resolve display names from match + parsed cricket data */
+function resolveNames(match: Match, cric: CricketData): { home: string; away: string } {
+  if (match.type === "official") {
+    return {
+      home: cric.home_team?.trim() || APP_CONFIG.appName,
+      away: match.opponent_name ?? "Opponent",
+    };
+  }
+  return {
+    home: cric.a_name?.trim() || "Team A",
+    away: cric.b_name?.trim() || "Team B",
+  };
+}
+
 export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Props) {
   const [matches,      setMatches]      = useState<Match[]>([]);
   const [players,      setPlayers]      = useState<Player[]>([]);
@@ -56,13 +75,17 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
   const [activeMatch,  setActiveMatch]  = useState<Match | null>(null);
   const [showNew,      setShowNew]      = useState(false);
   const [showMVP,      setShowMVP]      = useState(false);
+  const [deleting,     setDeleting]     = useState(false);
   const [saving,       setSaving]       = useState(false);
   const [customRuns,   setCustomRuns]   = useState("");
 
   /* New match form state */
   const [form, setForm] = useState({
     type:            "official" as "official" | "friendly",
-    opponent:        "",
+    team1Name:       APP_CONFIG.appName,   // editable "our" team name
+    team2Name:       "",                   // opponent / Team B name
+    teamAName:       "Team A",             // friendly Team A
+    teamBName:       "Team B",             // friendly Team B
     date:            new Date().toISOString().split("T")[0],
     matchOvers:      "20",
     selectedPlayers: [] as string[],
@@ -109,17 +132,24 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
   /* ── Create match ── */
   async function createMatch() {
     if (!isAdmin) { onAdminRequired(); return; }
-    if (form.type === "official" && !form.opponent.trim()) return;
+    if (form.type === "official" && !form.team2Name.trim()) return;
     if (form.type === "friendly" && form.selectedPlayers.length < 2) return;
 
     setSaving(true);
-    const initNotes: CricketData = { total_ovs: parseInt(form.matchOvers) || 20 };
+
+    const initNotes: CricketData = {
+      total_ovs: parseInt(form.matchOvers) || 20,
+      // store custom team names in notes JSON (no DB migration needed)
+      ...(form.type === "official"
+        ? { home_team: form.team1Name.trim() || APP_CONFIG.appName }
+        : { a_name: form.teamAName.trim() || "Team A", b_name: form.teamBName.trim() || "Team B" }),
+    };
 
     const { data: match, error } = await supabase
       .from("matches")
       .insert({
         type:          form.type,
-        opponent_name: form.type === "official" ? form.opponent.trim() : null,
+        opponent_name: form.type === "official" ? form.team2Name.trim() : null,
         match_date:    form.date,
         status:        "upcoming",
         notes:         JSON.stringify(initNotes),
@@ -149,13 +179,47 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
     setShowNew(false);
     setActiveMatch(match as Match);
     setView("scoreboard");
-    setForm({ type: "official", opponent: "", date: new Date().toISOString().split("T")[0], matchOvers: "20", selectedPlayers: [], teamA: [], teamB: [] });
+    setForm((f) => ({
+      ...f,
+      team1Name: APP_CONFIG.appName,
+      team2Name: "",
+      teamAName: "Team A",
+      teamBName: "Team B",
+      date: new Date().toISOString().split("T")[0],
+      matchOvers: "20",
+      selectedPlayers: [],
+      teamA: [],
+      teamB: [],
+    }));
   }
 
-  /* ── Update runs (+ wicket & over in notes) ── */
+  /* ── Delete match (admin only) ── */
+  async function deleteMatch(match: Match) {
+    if (!isAdmin) { onAdminRequired(); return; }
+    const cric  = parseCricket(match.notes);
+    const names = resolveNames(match, cric);
+    const label = match.type === "official"
+      ? `${names.home} vs ${names.away} (${match.match_date})`
+      : `Friendly: ${names.home} vs ${names.away} (${match.match_date})`;
+
+    if (!confirm(`Delete this match?\n\n"${label}"\n\nThis cannot be undone.`)) return;
+
+    setDeleting(true);
+    // Delete related rows first (match_players & match_fees cascade is not guaranteed)
+    await supabase.from("match_players").delete().eq("match_id", match.id);
+    await supabase.from("match_fees").delete().eq("match_id", match.id);
+    await supabase.from("matches").delete().eq("id", match.id);
+
+    setMatches((prev) => prev.filter((m) => m.id !== match.id));
+    setMatchPlayers((prev) => prev.filter((mp) => mp.match_id !== match.id));
+    setDeleting(false);
+    setView("list");
+    setActiveMatch(null);
+  }
+
+  /* ── Update runs ── */
   async function addRuns(match: Match, side: "home" | "away" | "a" | "b", runs: number) {
     if (!isAdmin) { onAdminRequired(); return; }
-    const isOfficial = match.type === "official";
     const runsField = side === "home" ? "score_home"
                     : side === "away" ? "score_away"
                     : side === "a"    ? "team_a_score"
@@ -173,7 +237,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
     const cric = parseCricket(match.notes);
     const wKey = side === "home" ? "home_w" : side === "away" ? "away_w" : side === "a" ? "a_w" : "b_w";
     const current = (cric[wKey] ?? 0);
-    if (current >= 10) return; // max 10 wickets
+    if (current >= 10) return;
     cric[wKey] = current + 1;
     const newNotes = JSON.stringify(cric);
     const updated = { ...match, notes: newNotes };
@@ -215,8 +279,10 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
 
   /* ── Cricket WhatsApp scorecard ── */
   function shareScorecard(match: Match) {
-    const cric = parseCricket(match.notes);
-    const mvpName = match.mvp_player_id ? getPlayerById(match.mvp_player_id)?.name : null;
+    const cric     = parseCricket(match.notes);
+    const names    = resolveNames(match, cric);
+    const mvpName  = match.mvp_player_id ? getPlayerById(match.mvp_player_id)?.name : null;
+    const tag      = `#${APP_CONFIG.appName.replace(/\s+/g, "")}`;
 
     if (match.type === "official") {
       const homeScore = formatCricketScore(match.score_home, cric.home_w ?? 0, cric.home_o ?? "0.0");
@@ -227,56 +293,54 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
         : match.score_home < match.score_away
         ? `😞 LOST by ${diff} runs`
         : "🤝 Match Tied!";
-      const text = [
-        `🏏 *${APP_CONFIG.appName}*`,
-        `Match vs ${match.opponent_name} | ${match.match_date}`,
+      const lines = [
+        `🏏 *${names.home}*`,
+        `Match vs ${names.away} | ${match.match_date}`,
         ``,
         `🏏 SCORECARD`,
-        `${APP_CONFIG.appName}: ${homeScore}`,
-        `${match.opponent_name}: ${awayScore}`,
+        `${names.home}: ${homeScore}`,
+        `${names.away}: ${awayScore}`,
         ``,
         result,
-        mvpName ? `⭐ MVP: ${mvpName}` : "",
+        ...(mvpName ? [`⭐ MVP: ${mvpName}`] : []),
         ``,
-        `#${APP_CONFIG.appName.replace(/\s+/g, "")}`,
-      ].filter((l) => l !== undefined).join("\n");
-      if (navigator.share) {
-        navigator.share({ text }).catch(() => navigator.clipboard.writeText(text));
-      } else {
-        navigator.clipboard.writeText(text);
-        alert("Cricket scorecard copied to clipboard!");
-      }
+        tag,
+      ];
+      const text = lines.join("\n");
+      navigator.share?.({ text }).catch(() => { navigator.clipboard.writeText(text); alert("Scorecard copied!"); })
+        ?? (navigator.clipboard.writeText(text), alert("Cricket scorecard copied to clipboard!"));
     } else {
       const aScore = formatCricketScore(match.team_a_score, cric.a_w ?? 0, cric.a_o ?? "0.0");
       const bScore = formatCricketScore(match.team_b_score, cric.b_w ?? 0, cric.b_o ?? "0.0");
       const result = match.team_a_score > match.team_b_score
-        ? "🏆 Team A Won!"
+        ? `🏆 ${names.home} Won!`
         : match.team_a_score < match.team_b_score
-        ? "🏆 Team B Won!"
+        ? `🏆 ${names.away} Won!`
         : "🤝 Match Tied!";
-      const text = [
+      const lines = [
         `🏏 *${APP_CONFIG.appName} — Friendly*`,
         match.match_date,
         ``,
         `🏏 SCORECARD`,
-        `Team A: ${aScore}`,
-        `Team B: ${bScore}`,
+        `${names.home}: ${aScore}`,
+        `${names.away}: ${bScore}`,
         ``,
         result,
-        mvpName ? `⭐ MVP: ${mvpName}` : "",
+        ...(mvpName ? [`⭐ MVP: ${mvpName}`] : []),
         ``,
-        `#${APP_CONFIG.appName.replace(/\s+/g, "")}`,
-      ].filter((l) => l !== undefined).join("\n");
-      if (navigator.share) {
-        navigator.share({ text }).catch(() => navigator.clipboard.writeText(text));
-      } else {
-        navigator.clipboard.writeText(text);
-        alert("Cricket scorecard copied to clipboard!");
-      }
+        tag,
+      ];
+      const text = lines.join("\n");
+      navigator.share?.({ text }).catch(() => { navigator.clipboard.writeText(text); alert("Scorecard copied!"); })
+        ?? (navigator.clipboard.writeText(text), alert("Cricket scorecard copied to clipboard!"));
     }
   }
 
-  if (loading) return <div className="flex justify-center items-center h-40"><Loader2 className="animate-spin text-emerald-500" size={28} /></div>;
+  if (loading) return (
+    <div className="flex justify-center items-center h-40">
+      <Loader2 className="animate-spin text-emerald-500" size={28} />
+    </div>
+  );
 
   /* ══════════════════════════════════════════
      SCOREBOARD VIEW
@@ -286,6 +350,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
     const isLive       = activeMatch.status === "live";
     const isCompleted  = activeMatch.status === "completed";
     const cric         = parseCricket(activeMatch.notes);
+    const names        = resolveNames(activeMatch, cric);
     const totalOvs     = cric.total_ovs ?? 20;
 
     const homeRuns = activeMatch.score_home;
@@ -293,11 +358,14 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
     const aRuns    = activeMatch.team_a_score;
     const bRuns    = activeMatch.team_b_score;
 
-    const teamAPlayers = matchPlayers.filter((mp) => mp.match_id === activeMatch.id && mp.team_side === "team_a").map((mp) => getPlayerById(mp.player_id)).filter(Boolean) as Player[];
-    const teamBPlayers = matchPlayers.filter((mp) => mp.match_id === activeMatch.id && mp.team_side === "team_b").map((mp) => getPlayerById(mp.player_id)).filter(Boolean) as Player[];
-    const mvpPlayer    = activeMatch.mvp_player_id ? getPlayerById(activeMatch.mvp_player_id) : null;
+    const teamAPlayers = matchPlayers
+      .filter((mp) => mp.match_id === activeMatch.id && mp.team_side === "team_a")
+      .map((mp) => getPlayerById(mp.player_id)).filter(Boolean) as Player[];
+    const teamBPlayers = matchPlayers
+      .filter((mp) => mp.match_id === activeMatch.id && mp.team_side === "team_b")
+      .map((mp) => getPlayerById(mp.player_id)).filter(Boolean) as Player[];
+    const mvpPlayer = activeMatch.mvp_player_id ? getPlayerById(activeMatch.mvp_player_id) : null;
 
-    /* Score strings for display */
     const homeScoreStr = formatCricketScore(homeRuns, cric.home_w ?? 0, cric.home_o ?? "0.0");
     const awayScoreStr = formatCricketScore(awayRuns, cric.away_w ?? 0, cric.away_o ?? "0.0");
     const aScoreStr    = formatCricketScore(aRuns, cric.a_w ?? 0, cric.a_o ?? "0.0");
@@ -305,14 +373,33 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
 
     return (
       <div className="px-4 pt-4 pb-28 scroll-panel overflow-y-auto">
-        <button onClick={() => setView("list")} className="flex items-center gap-1.5 text-sm text-gray-500 mb-4 hover:text-gray-700">
-          ← Back to Matches
-        </button>
+        {/* Top bar: back + delete */}
+        <div className="flex items-center justify-between mb-4">
+          <button
+            onClick={() => setView("list")}
+            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700"
+          >
+            ← Back to Matches
+          </button>
+          {isAdmin && (
+            <button
+              onClick={() => deleteMatch(activeMatch)}
+              disabled={deleting}
+              className="flex items-center gap-1.5 text-xs font-semibold text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-full transition-colors"
+            >
+              {deleting
+                ? <Loader2 size={12} className="animate-spin" />
+                : <Trash2 size={12} />}
+              Delete Match
+            </button>
+          )}
+        </div>
 
         {/* Match header card */}
         <div className="bg-gray-900 rounded-3xl p-5 text-white mb-4 shadow-xl">
           <div className="flex items-center justify-between mb-1">
-            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${isLive ? "bg-red-500 animate-pulse" : isCompleted ? "bg-gray-600" : "bg-blue-500"}`}>
+            <span className={`text-xs font-bold px-2 py-0.5 rounded-full
+              ${isLive ? "bg-red-500 animate-pulse" : isCompleted ? "bg-gray-600" : "bg-blue-500"}`}>
               {isLive ? "🔴 LIVE" : isCompleted ? "FT" : "UPCOMING"}
             </span>
             <span className="text-xs text-gray-400">{activeMatch.match_date} · {totalOvs} Ov</span>
@@ -322,7 +409,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
           <div className="flex items-center justify-between mt-4">
             <div className="text-center flex-1">
               <p className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider truncate">
-                {isOfficial ? APP_CONFIG.appName : "Team A"}
+                {names.home}
               </p>
               <p className="text-3xl font-black tabular-nums leading-tight">
                 {isOfficial ? homeScoreStr : aScoreStr}
@@ -331,7 +418,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
             <div className="text-gray-500 text-xl font-light mx-2">vs</div>
             <div className="text-center flex-1">
               <p className="text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider truncate">
-                {isOfficial ? (activeMatch.opponent_name ?? "Opponent") : "Team B"}
+                {names.away}
               </p>
               <p className="text-3xl font-black tabular-nums leading-tight">
                 {isOfficial ? awayScoreStr : bScoreStr}
@@ -342,10 +429,11 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
           {/* Admin cricket controls */}
           {!isCompleted && isAdmin && (
             <div className="mt-5 space-y-3">
-              {/* Two innings panels side-by-side */}
               {(["left", "right"] as const).map((side) => {
-                const inSide   = isOfficial ? (side === "left" ? "home" : "away") : (side === "left" ? "a" : "b");
-                const label    = isOfficial ? (side === "left" ? (APP_CONFIG.appName.split(" ")[0]) : (activeMatch.opponent_name ?? "Opp")) : (side === "left" ? "Team A" : "Team B");
+                const inSide  = isOfficial
+                  ? (side === "left" ? "home" : "away")
+                  : (side === "left" ? "a"    : "b");
+                const label   = side === "left" ? names.home : names.away;
                 return (
                   <div key={side} className="bg-white/10 rounded-2xl p-3">
                     <p className="text-xs font-bold text-gray-300 mb-2 text-center truncate">{label}</p>
@@ -356,7 +444,9 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                           key={r}
                           onClick={() => addRuns(activeMatch, inSide as "home"|"away"|"a"|"b", r)}
                           className={`rounded-xl px-3 py-2 text-sm font-black transition-colors
-                            ${r === 4 ? "bg-blue-500 hover:bg-blue-400" : r === 6 ? "bg-yellow-500 hover:bg-yellow-400 text-gray-900" : "bg-emerald-500 hover:bg-emerald-400"}`}
+                            ${r === 4 ? "bg-blue-500 hover:bg-blue-400"
+                            : r === 6 ? "bg-yellow-500 hover:bg-yellow-400 text-gray-900"
+                            :           "bg-emerald-500 hover:bg-emerald-400"}`}
                         >
                           +{r}
                         </button>
@@ -364,7 +454,10 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                       <button
                         onClick={() => {
                           const v = parseInt(customRuns);
-                          if (!isNaN(v) && v > 0) { addRuns(activeMatch, inSide as "home"|"away"|"a"|"b", v); setCustomRuns(""); }
+                          if (!isNaN(v) && v > 0) {
+                            addRuns(activeMatch, inSide as "home"|"away"|"a"|"b", v);
+                            setCustomRuns("");
+                          }
                         }}
                         className="bg-gray-600 hover:bg-gray-500 rounded-xl px-3 py-2 text-sm font-black"
                       >
@@ -395,12 +488,11 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                 <input
                   type="number"
                   min="1"
-                  placeholder="Custom runs"
+                  placeholder="Custom runs → tap +?"
                   value={customRuns}
                   onChange={(e) => setCustomRuns(e.target.value)}
                   className="flex-1 bg-white/10 border border-white/20 text-white placeholder-gray-500 rounded-xl px-3 py-2 text-sm outline-none"
                 />
-                <span className="text-xs text-gray-400 self-center">→ tap +? above</span>
               </div>
             </div>
           )}
@@ -447,7 +539,8 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
           <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 flex items-center gap-4 mb-4">
             {mvpPlayer.avatar_url ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={mvpPlayer.avatar_url} alt={mvpPlayer.name} className="w-14 h-14 rounded-full object-cover object-top border-2 border-yellow-400" />
+              <img src={mvpPlayer.avatar_url} alt={mvpPlayer.name}
+                className="w-14 h-14 rounded-full object-cover object-top border-2 border-yellow-400" />
             ) : (
               <div className="w-14 h-14 rounded-full bg-yellow-200 flex items-center justify-center text-xl font-black text-yellow-600">
                 {mvpPlayer.name[0]}
@@ -464,15 +557,19 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
         {/* Teams (friendly) */}
         {!isOfficial && (teamAPlayers.length > 0 || teamBPlayers.length > 0) && (
           <div className="grid grid-cols-2 gap-3 mb-4">
-            {[{ label: "Team A", players: teamAPlayers }, { label: "Team B", players: teamBPlayers }].map(({ label, players: pl }) => (
+            {[
+              { label: names.home, players: teamAPlayers },
+              { label: names.away, players: teamBPlayers },
+            ].map(({ label, players: pl }) => (
               <div key={label} className="bg-white rounded-2xl p-3 border border-gray-100 shadow-sm">
-                <p className="font-bold text-sm mb-2 text-center">{label}</p>
+                <p className="font-bold text-sm mb-2 text-center truncate">{label}</p>
                 <div className="flex flex-wrap gap-1">
                   {pl.map((p) => (
                     <div key={p.id} className="flex flex-col items-center gap-0.5">
                       {p.avatar_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={p.avatar_url} alt={p.name} className="w-8 h-8 rounded-full object-cover object-top" />
+                        <img src={p.avatar_url} alt={p.name}
+                          className="w-8 h-8 rounded-full object-cover object-top" />
                       ) : (
                         <div className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-400">
                           {p.name[0]}
@@ -491,7 +588,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
         {activeMatch.status === "completed" && (
           <button
             onClick={() => { onNavigate?.("payments"); }}
-            className="w-full bg-emerald-50 border border-emerald-200 text-emerald-700 font-semibold py-3 rounded-2xl text-sm flex items-center justify-center gap-2"
+            className="w-full bg-emerald-50 border border-emerald-200 text-emerald-700 font-semibold py-3 rounded-2xl text-sm flex items-center justify-center gap-2 mb-3"
           >
             💰 Create Payment Split for this Match
           </button>
@@ -511,11 +608,14 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                     key={p.id}
                     onClick={() => setMVP(activeMatch, p.id)}
                     className={`flex flex-col items-center gap-1.5 p-3 rounded-2xl border-2 transition-colors
-                      ${activeMatch.mvp_player_id === p.id ? "border-yellow-400 bg-yellow-50" : "border-gray-100 hover:border-yellow-200"}`}
+                      ${activeMatch.mvp_player_id === p.id
+                        ? "border-yellow-400 bg-yellow-50"
+                        : "border-gray-100 hover:border-yellow-200"}`}
                   >
                     {p.avatar_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={p.avatar_url} alt={p.name} className="w-14 h-14 rounded-full object-cover object-top" />
+                      <img src={p.avatar_url} alt={p.name}
+                        className="w-14 h-14 rounded-full object-cover object-top" />
                     ) : (
                       <div className="w-14 h-14 rounded-full bg-gray-100 flex items-center justify-center text-lg font-black text-gray-400">
                         {p.name[0]}
@@ -537,9 +637,10 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
   ══════════════════════════════════════════ */
   return (
     <div className="px-4 pt-4 pb-28 scroll-panel overflow-y-auto">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-gray-500"><span className="font-semibold text-gray-800">{matches.length}</span> matches recorded</p>
+        <p className="text-sm text-gray-500">
+          <span className="font-semibold text-gray-800">{matches.length}</span> matches recorded
+        </p>
         <button
           onClick={() => { if (!isAdmin) { onAdminRequired(); return; } setShowNew(true); }}
           className="flex items-center gap-1 bg-emerald-500 text-white text-sm font-semibold px-3 py-2 rounded-full shadow-sm"
@@ -559,6 +660,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
           {matches.map((match) => {
             const isOfficial = match.type === "official";
             const cric       = parseCricket(match.notes);
+            const names      = resolveNames(match, cric);
             const homeWin    = isOfficial && match.score_home > match.score_away;
             const draw       = isOfficial && match.score_home === match.score_away;
             const aWin       = !isOfficial && match.team_a_score > match.team_b_score;
@@ -572,23 +674,26 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                 className="w-full bg-white rounded-2xl border border-gray-100 shadow-sm p-4 text-left hover:border-emerald-200 transition-colors"
               >
                 <div className="flex items-start justify-between mb-2">
-                  <div>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full mr-2
+                  <div className="flex flex-wrap gap-1">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full
                       ${match.type === "official" ? "bg-blue-100 text-blue-600" : "bg-purple-100 text-purple-600"}`}>
                       {match.type === "official" ? "🏏 Official" : "🤝 Friendly"}
                     </span>
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full
-                      ${match.status === "live" ? "bg-red-100 text-red-600 animate-pulse" : match.status === "completed" ? "bg-gray-100 text-gray-500" : "bg-amber-100 text-amber-600"}`}>
+                      ${match.status === "live"      ? "bg-red-100 text-red-600 animate-pulse"
+                      : match.status === "completed" ? "bg-gray-100 text-gray-500"
+                      :                                "bg-amber-100 text-amber-600"}`}>
                       {match.status === "live" ? "🔴 LIVE" : match.status === "completed" ? "FT" : "Upcoming"}
                     </span>
                   </div>
-                  <span className="text-xs text-gray-400">{match.match_date}</span>
+                  <span className="text-xs text-gray-400 shrink-0 ml-1">{match.match_date}</span>
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-bold text-base">
-                      {isOfficial ? `vs ${match.opponent_name}` : "Team A vs Team B"}
+                  <div className="min-w-0 flex-1 mr-2">
+                    {/* Custom team names displayed in list */}
+                    <p className="font-bold text-base truncate">
+                      {names.home} vs {names.away}
                     </p>
                     {match.status !== "upcoming" && (
                       <div className="mt-1 space-y-0.5">
@@ -607,14 +712,20 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                   </div>
 
                   {match.status === "completed" && isOfficial && (
-                    <span className={`text-xs font-bold px-3 py-1 rounded-full
-                      ${homeWin ? "bg-emerald-100 text-emerald-700" : draw ? "bg-gray-100 text-gray-600" : "bg-red-100 text-red-600"}`}>
+                    <span className={`text-xs font-bold px-3 py-1 rounded-full shrink-0
+                      ${homeWin ? "bg-emerald-100 text-emerald-700"
+                      : draw    ? "bg-gray-100 text-gray-600"
+                      :           "bg-red-100 text-red-600"}`}>
                       {homeWin ? "Won" : draw ? "Tied" : "Lost"}
                     </span>
                   )}
                   {match.status === "completed" && !isOfficial && (
-                    <span className="text-xs font-bold px-3 py-1 rounded-full bg-purple-100 text-purple-700">
-                      {aWin ? "Team A" : match.team_a_score < match.team_b_score ? "Team B" : "Tied"}
+                    <span className="text-xs font-bold px-3 py-1 rounded-full bg-purple-100 text-purple-700 shrink-0">
+                      {aWin
+                        ? `${names.home} ✓`
+                        : match.team_a_score < match.team_b_score
+                        ? `${names.away} ✓`
+                        : "Tied"}
                     </span>
                   )}
                 </div>
@@ -625,7 +736,8 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
                     {participants.slice(0, 6).map((p) => (
                       p.avatar_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img key={p.id} src={p.avatar_url} alt={p.name} className="w-7 h-7 rounded-full border-2 border-white object-cover object-top" />
+                        <img key={p.id} src={p.avatar_url} alt={p.name}
+                          className="w-7 h-7 rounded-full border-2 border-white object-cover object-top" />
                       ) : (
                         <div key={p.id} className="w-7 h-7 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-[10px] font-bold text-gray-500">
                           {p.name[0]}
@@ -650,7 +762,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
         </div>
       )}
 
-      {/* New Match bottom sheet */}
+      {/* ── New Match bottom sheet ── */}
       {showNew && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50">
           <div className="bg-white w-full max-w-md rounded-t-3xl p-6 pb-8 shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -682,7 +794,7 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
             />
 
             {/* Match Overs */}
-            <div className="mb-3">
+            <div className="mb-4">
               <label className="text-xs text-gray-500 font-semibold mb-1 block">Match Overs</label>
               <select
                 className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-white outline-none focus:border-emerald-400"
@@ -699,80 +811,136 @@ export default function MatchesTab({ isAdmin, onAdminRequired, onNavigate }: Pro
               </select>
             </div>
 
-            {/* Official: opponent name */}
+            {/* ── Official: both team names ── */}
             {form.type === "official" && (
-              <input
-                className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm mb-3 outline-none focus:border-emerald-400"
-                placeholder="Opponent Team Name *"
-                value={form.opponent}
-                onChange={(e) => setForm((f) => ({ ...f, opponent: e.target.value }))}
-              />
+              <div className="space-y-3 mb-4">
+                <div>
+                  <label className="text-xs text-gray-500 font-semibold mb-1 block">Team 1 Name (Your Team)</label>
+                  <input
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-400"
+                    placeholder={APP_CONFIG.appName}
+                    value={form.team1Name}
+                    onChange={(e) => setForm((f) => ({ ...f, team1Name: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 font-semibold mb-1 block">Team 2 Name (Opponent) *</label>
+                  <input
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm outline-none focus:border-emerald-400"
+                    placeholder="Opponent Team Name"
+                    value={form.team2Name}
+                    onChange={(e) => setForm((f) => ({ ...f, team2Name: e.target.value }))}
+                  />
+                </div>
+              </div>
             )}
 
-            {/* Friendly: player selection + team generator */}
+            {/* ── Friendly: team names + player selection ── */}
             {form.type === "friendly" && (
-              <div className="mb-3">
-                <p className="text-xs text-gray-500 font-semibold mb-2">
-                  Select Present Players ({form.selectedPlayers.length} selected)
-                </p>
-                <div className="border border-gray-200 rounded-xl overflow-hidden max-h-48 overflow-y-auto mb-3">
-                  {players.map((p) => {
-                    const sel = form.selectedPlayers.includes(p.id);
-                    return (
-                      <label key={p.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer border-b border-gray-50 last:border-0">
-                        <input
-                          type="checkbox"
-                          checked={sel}
-                          onChange={() =>
-                            setForm((f) => ({
-                              ...f,
-                              selectedPlayers: sel ? f.selectedPlayers.filter((id) => id !== p.id) : [...f.selectedPlayers, p.id],
-                            }))
-                          }
-                          className="accent-emerald-500 w-4 h-4"
-                        />
-                        {p.avatar_url ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={p.avatar_url} alt={p.name} className="w-7 h-7 rounded-full object-cover object-top" />
-                        ) : (
-                          <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-400">{p.name[0]}</div>
-                        )}
-                        <span className="text-sm">{p.name}</span>
-                      </label>
-                    );
-                  })}
+              <div className="mb-3 space-y-3">
+                {/* Team name inputs */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs text-gray-500 font-semibold mb-1 block">Team A Name</label>
+                    <input
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-400"
+                      placeholder="Team A"
+                      value={form.teamAName}
+                      onChange={(e) => setForm((f) => ({ ...f, teamAName: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 font-semibold mb-1 block">Team B Name</label>
+                    <input
+                      className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-400"
+                      placeholder="Team B"
+                      value={form.teamBName}
+                      onChange={(e) => setForm((f) => ({ ...f, teamBName: e.target.value }))}
+                    />
+                  </div>
                 </div>
 
-                {form.selectedPlayers.length >= 2 && (
-                  <button
-                    onClick={shuffleTeams}
-                    className="w-full bg-purple-50 border border-purple-200 text-purple-700 font-semibold py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 mb-3"
-                  >
-                    <Shuffle size={15} /> Auto-Shuffle Teams
-                  </button>
-                )}
-
-                {(form.teamA.length > 0 || form.teamB.length > 0) && (
-                  <div className="grid grid-cols-2 gap-2">
-                    {[{ label: "Team A", ids: form.teamA }, { label: "Team B", ids: form.teamB }].map(({ label, ids }) => (
-                      <div key={label} className="bg-gray-50 rounded-xl p-3">
-                        <p className="text-xs font-bold mb-1.5 text-center">{label} ({ids.length})</p>
-                        {ids.map((id) => {
-                          const p = getPlayerById(id);
-                          return p ? <p key={id} className="text-xs text-gray-600 truncate">{p.name}</p> : null;
-                        })}
-                      </div>
-                    ))}
+                {/* Player selection */}
+                <div>
+                  <p className="text-xs text-gray-500 font-semibold mb-2">
+                    Select Present Players ({form.selectedPlayers.length} selected)
+                  </p>
+                  <div className="border border-gray-200 rounded-xl overflow-hidden max-h-48 overflow-y-auto mb-3">
+                    {players.map((p) => {
+                      const sel = form.selectedPlayers.includes(p.id);
+                      return (
+                        <label key={p.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer border-b border-gray-50 last:border-0">
+                          <input
+                            type="checkbox"
+                            checked={sel}
+                            onChange={() =>
+                              setForm((f) => ({
+                                ...f,
+                                selectedPlayers: sel
+                                  ? f.selectedPlayers.filter((id) => id !== p.id)
+                                  : [...f.selectedPlayers, p.id],
+                              }))
+                            }
+                            className="accent-emerald-500 w-4 h-4"
+                          />
+                          {p.avatar_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={p.avatar_url} alt={p.name}
+                              className="w-7 h-7 rounded-full object-cover object-top" />
+                          ) : (
+                            <div className="w-7 h-7 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold text-gray-400">
+                              {p.name[0]}
+                            </div>
+                          )}
+                          <span className="text-sm">{p.name}</span>
+                        </label>
+                      );
+                    })}
                   </div>
-                )}
+
+                  {form.selectedPlayers.length >= 2 && (
+                    <button
+                      onClick={shuffleTeams}
+                      className="w-full bg-purple-50 border border-purple-200 text-purple-700 font-semibold py-2.5 rounded-xl text-sm flex items-center justify-center gap-2 mb-3"
+                    >
+                      <Shuffle size={15} /> Auto-Shuffle Teams
+                    </button>
+                  )}
+
+                  {(form.teamA.length > 0 || form.teamB.length > 0) && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { label: form.teamAName || "Team A", ids: form.teamA },
+                        { label: form.teamBName || "Team B", ids: form.teamB },
+                      ].map(({ label, ids }) => (
+                        <div key={label} className="bg-gray-50 rounded-xl p-3">
+                          <p className="text-xs font-bold mb-1.5 text-center truncate">{label} ({ids.length})</p>
+                          {ids.map((id) => {
+                            const p = getPlayerById(id);
+                            return p ? <p key={id} className="text-xs text-gray-600 truncate">{p.name}</p> : null;
+                          })}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
             <div className="flex gap-3 mt-2">
-              <button onClick={() => setShowNew(false)} className="flex-1 border border-gray-200 py-3 rounded-xl text-sm font-semibold text-gray-600">Cancel</button>
+              <button
+                onClick={() => setShowNew(false)}
+                className="flex-1 border border-gray-200 py-3 rounded-xl text-sm font-semibold text-gray-600"
+              >
+                Cancel
+              </button>
               <button
                 onClick={createMatch}
-                disabled={saving || (form.type === "official" && !form.opponent.trim()) || (form.type === "friendly" && form.selectedPlayers.length < 2)}
+                disabled={
+                  saving ||
+                  (form.type === "official" && !form.team2Name.trim()) ||
+                  (form.type === "friendly" && form.selectedPlayers.length < 2)
+                }
                 className="flex-1 bg-emerald-500 disabled:opacity-50 text-white py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
               >
                 {saving && <Loader2 size={14} className="animate-spin" />} Create Match
